@@ -40,26 +40,37 @@ def _load_catalog():
 
     import catalog_indexer
 
-    with open(CATALOG_PATH, encoding="utf-8") as f:
-        CATALOG = json.load(f)
-        catalog_indexer.CATALOG = CATALOG
-    print(f"[agent] Loaded {len(CATALOG)} catalog items")
-
+    # catalog_processed.json is gitignored and may not exist on Render.
+    # Always rebuild from raw catalog to ensure consistent state.
     if catalog_indexer.HAS_LANG:
         try:
-            from sentence_transformers import SentenceTransformer
             from catalog_indexer import load_index
-            embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            # load_index() rebuilds FAISS+BM25 and sets catalog_indexer.CATALOG
             faiss_index = load_index()
-            # Set globals on catalog_indexer so retrieve_assessments can read them
-            catalog_indexer.EMBEDDER = embedder
-            catalog_indexer.FAISS_INDEX = faiss_index
+            CATALOG = catalog_indexer.CATALOG
             if faiss_index is not None:
-                print("[agent] FAISS index loaded")
+                print(f"[agent] FAISS+BM25 index ready, {len(CATALOG)} catalog items")
             else:
                 print("[agent] FAISS index not found (run catalog_indexer.py first)")
         except Exception as e:
             print(f"[agent] Could not load embedder/index: {e}")
+            # Fallback: load raw catalog directly
+            raw = catalog_indexer.load_raw_catalog()
+            CATALOG = catalog_indexer.preprocess_catalog(raw)
+            catalog_indexer.CATALOG = CATALOG
+            print(f"[agent] Loaded {len(CATALOG)} catalog items (raw fallback)")
+    else:
+        # No FAISS: load processed catalog from disk if available
+        if os.path.exists(CATALOG_PATH):
+            with open(CATALOG_PATH, encoding="utf-8") as f:
+                CATALOG = json.load(f)
+                catalog_indexer.CATALOG = CATALOG
+            print(f"[agent] Loaded {len(CATALOG)} catalog items")
+        else:
+            raw = catalog_indexer.load_raw_catalog()
+            CATALOG = catalog_indexer.preprocess_catalog(raw)
+            catalog_indexer.CATALOG = CATALOG
+            print(f"[agent] Loaded {len(CATALOG)} catalog items (raw fallback)")
 
 
 # ── Request / Response models ──────────────────────────────────────────────────
