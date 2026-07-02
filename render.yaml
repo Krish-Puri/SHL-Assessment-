@@ -8,11 +8,10 @@ services:
     env: python
     region: oregon
     plan: free
+    pythonVersion: "3.12"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: GROQ_API_KEY
-        sync: false  # set in Render dashboard → Environment tab
-      - key: PYTHON_VERSION
-        value: "3.12"
+        sync: false
