@@ -11,21 +11,23 @@ from typing import Any, Union, Optional, List
 try:
     import faiss
     import numpy as np
-    from sentence_transformers import SentenceTransformer
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.preprocessing import normalize as normalize_vectors
 
     HAS_LANG = True
 except ImportError as e:
     HAS_LANG = False
-    print(f"[WARN] faiss/sentence-transformers not available: {e}. Using keyword-only retrieval.")
+    print(f"[WARN] faiss/sklearn not available: {e}. Using keyword-only retrieval.")
 
 
 CATALOG_RAW = Path(__file__).parent / "shl_product_catalog.json"
 CATALOG_OUT = Path(__file__).parent / "catalog_processed.json"
 INDEX_FILE = Path(__file__).parent / "catalog_index.faiss"
-EMBEDDER_NAME = "all-MiniLM-L6-v2"
 
 # Module-level globals (set by load_index / build_faiss_index)
-EMBEDDER = None
+# EMBEDDER is a dict: {"vectorizer": TfidfVectorizer, "svd": TruncatedSVD}
+EMBEDDER: dict = {}
 FAISS_INDEX = None
 BM25_INDEX = None
 CATALOG: list = []
@@ -133,48 +135,82 @@ def preprocess_catalog(raw_catalog: list[dict]) -> list[dict]:
 # ── FAISS index builder ────────────────────────────────────────────────────────
 
 def build_faiss_index(catalog: list, index_path: Union[str, Path] = INDEX_FILE):
-    """Build and save FAISS index from normalized catalog embeddings."""
+    """Build and save FAISS index from TF-IDF + SVD embeddings."""
     global EMBEDDER, FAISS_INDEX
     if not HAS_LANG:
         print("[SKIP] FAISS indexing skipped (deps not installed).")
         return
 
-    embedder = SentenceTransformer(EMBEDDER_NAME)
-
     texts = [
         f"{item['name']} | {item['description']} | types: {','.join(item['keys'])}"
         for item in catalog
     ]
-    embeddings = embedder.encode(texts, show_progress_bar=True, batch_size=64)
 
-    # Normalize to unit length so IndexFlatIP == cosine similarity
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    embeddings = embeddings / norms
+    # TF-IDF vectorizer — captures exact term matching (like BM25) but with smooth weights
+    vectorizer = TfidfVectorizer(
+        max_features=5000,
+        ngram_range=(1, 2),
+        sublinear_tf=True,   # log(tf + 1) — dampens high-frequency terms
+        min_df=1,
+    )
+    tfidf_matrix = vectorizer.fit_transform(texts)
+
+    # Truncated SVD to reduce dimensionality and capture latent semantic themes
+    # 128 dims is enough for 377 short catalog descriptions
+    n_components = min(128, tfidf_matrix.shape[1] - 1, tfidf_matrix.shape[0] - 1)
+    svd = TruncatedSVD(n_components=n_components, random_state=42)
+    embeddings = svd.fit_transform(tfidf_matrix)
+
+    # L2-normalize so IndexFlatIP == cosine similarity
+    embeddings = normalize_vectors(embeddings, norm="l2").astype(np.float32)
 
     dim = embeddings.shape[1]
-    index = faiss.IndexFlatIP(dim)  # inner product = cosine similarity for normalized vectors
-    index.add(embeddings.astype(np.float32))
+    index = faiss.IndexFlatIP(dim)
+    index.add(embeddings)
 
     faiss.write_index(index, str(index_path))
-    EMBEDDER = embedder
+    EMBEDDER = {"vectorizer": vectorizer, "svd": svd}
     FAISS_INDEX = index
-    print(f"[OK] FAISS index built: {len(catalog)} items, dim={dim}, IndexFlatIP (cosine)")
+    print(f"[OK] FAISS index built: {len(catalog)} items, dim={dim} (TF-IDF+SVD), IndexFlatIP (cosine)")
 
 
 def load_index(index_path: Union[str, Path] = INDEX_FILE):
-    """Load existing FAISS index and initialise the embedder. Sets module globals."""
+    """Load existing FAISS index and re-fit the TF-IDF vectorizer (needed to encode queries).
+    Always rebuilds the index — the TF-IDF index format is not compatible with the old
+    sentence-transformers format, so no point trying to load a stale file.
+    Sets module globals. Returns the FAISS index."""
     global EMBEDDER, FAISS_INDEX, BM25_INDEX
-    if not HAS_LANG or not os.path.exists(index_path):
-        return None
-    idx = faiss.read_index(str(index_path))
-    EMBEDDER = SentenceTransformer(EMBEDDER_NAME)
-    FAISS_INDEX = idx
-    # Ensure CATALOG is populated before building BM25 (may be called before main())
+
+    # Load catalog if not already loaded
     global CATALOG
     if not CATALOG:
         raw = load_raw_catalog()
         CATALOG = preprocess_catalog(raw)
+
+    if not HAS_LANG:
+        build_bm25_index(CATALOG)
+        return None
+
+    # Always rebuild — old sentence-transformers index is incompatible with TF-IDF embedder
+    print("[INFO] Building TF-IDF+FAISS index (this takes ~5-10s)...")
+    build_faiss_index(CATALOG, index_path)
+
+    idx = faiss.read_index(str(index_path))
+    FAISS_INDEX = idx
+
+    # Re-fit vectorizer on the catalog so we can encode new queries
+    texts = [
+        f"{item['name']} | {item['description']} | types: {','.join(item['keys'])}"
+        for item in CATALOG
+    ]
+    vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1, 2), sublinear_tf=True, min_df=1)
+    tfidf_matrix = vectorizer.fit_transform(texts)
+    n_components = min(128, tfidf_matrix.shape[1] - 1, tfidf_matrix.shape[0] - 1)
+    svd = TruncatedSVD(n_components=n_components, random_state=42)
+    svd.fit(tfidf_matrix)
+    EMBEDDER = {"vectorizer": vectorizer, "svd": svd}
     build_bm25_index(CATALOG)
+    print("[OK] FAISS index ready (TF-IDF+SVD), BM25 ready")
     return idx
 
 
@@ -215,12 +251,16 @@ def bm25_search(query: str, catalog: list[dict], top_k: int = 40) -> list[dict]:
 
 # ── Retrieval functions ────────────────────────────────────────────────────────
 
-def semantic_search(query: str, catalog: list[dict], embedder, index, top_k: int = 15) -> list[dict]:
-    """ANN search in FAISS index."""
-    if index is None or embedder is None:
+def semantic_search(query: str, catalog: list[dict], embedder: dict, index, top_k: int = 15) -> list[dict]:
+    """ANN search in FAISS index using TF-IDF+SVD query encoding."""
+    if index is None or not embedder:
         return []
-    q_emb = embedder.encode([query])
-    _, indices = index.search(q_emb.astype(np.float32), top_k)
+    vectorizer = embedder["vectorizer"]
+    svd = embedder["svd"]
+    q_tfidf = vectorizer.transform([query])
+    q_emb = svd.transform(q_tfidf)
+    q_emb = normalize_vectors(q_emb, norm="l2").astype(np.float32)
+    _, indices = index.search(q_emb, top_k)
     return [catalog[i] for i in indices[0] if i < len(catalog)]
 
 
