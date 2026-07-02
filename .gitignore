@@ -21,6 +21,11 @@ build/
 api.log
 api_server.log
 
+# Submission artifacts
+approach.html
+approach.pdf
+make_pdf.py
+
 # OS
 nul
 .DS_Store
