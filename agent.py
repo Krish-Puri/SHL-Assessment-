@@ -21,7 +21,7 @@ import httpx
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_BASE = "https://api.groq.com/openai/v1"
 CATALOG_PATH = os.path.join(os.path.dirname(__file__), "catalog_processed.json")
 EMBEDDER = None
