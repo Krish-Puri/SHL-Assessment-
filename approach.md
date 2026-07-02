@@ -31,14 +31,15 @@ out-of-the-box. Uvicorn runs the server.
   with `json.loads(strict=False)`.
 - Each of 377 items is normalized: test-type codes (K/A/P/S/B/C/D), job-level booleans
   (`is_senior`, `is_graduate`, etc.), and tech-keyword extraction from name+description.
-- Two indexes are built at startup:
-  - FAISS `IndexFlatIP` (384-dim, `all-MiniLM-L6-v2` embeddings, cosine similarity)
+- Two indexes are built at startup (FAISS index is always rebuilt fresh to keep memory footprint low):
+  - FAISS `IndexFlatIP` (128-dim TF-IDF+SVD embeddings, cosine similarity) — built from
+    `TfidfVectorizer` (5000 features, 1-2 ngrams, sublinear TF) + `TruncatedSVD` (128 dims)
   - BM25 (`rank_bm25.BM25Plus`) over name + description
 
 ### Three-stage hybrid retrieval (BM25 + FAISS + RRF)
 The retrieval pipeline has three stages:
 1. **BM25 search** — exact-match friendly for entities like "Java 8", "OPQ32r", ".NET"
-2. **FAISS semantic search** — conceptual similarity (e.g. "communicative leader" → personality)
+2. **FAISS semantic search** — TF-IDF+SVD vector similarity (e.g. "communicative leader" → personality)
 3. **Reciprocal Rank Fusion (RRF)** — merges both rankings with `k=60` smoothing
 4. **Attribute post-filter** — filters by level/type/language, preserving fused rank order
 
@@ -182,7 +183,13 @@ personality" — so retrieval returned 0 results.
 only (level + test_type drive the query). Applied in both the populated-shortlist path
 (and the empty-shortlist/reconstruction path).
 
-### Bug: Technology replacement had no handler
+### Bug: sentence-transformers OOM on Render free tier
+Render's free tier has 512MB RAM. `sentence-transformers` + `torch` + the model files
+(~400MB) exhausts memory on the first cold start, before the app even begins serving requests.
+**Fix**: Replaced with `scikit-learn` TF-IDF (`TfidfVectorizer`) + `TruncatedSVD` (128 dims).
+Memory footprint dropped from ~450MB to ~60MB. TF-IDF also has better exact-term matching
+for entities like "Java 8" or "OPQ32r", though conceptually it is less rich than BERT embeddings.
+BM25 already covers exact-match well; TF-IDF+SVD supplements it with latent semantic themes.
 "Actually make that Python developers instead." had no matching ADD or DROP pattern, so it
 fell through to the LLM and was misclassified. Java results were still returned.
 **Fix**: Added `REFINE_REPLACE` intent with its own regex pattern and `_handle_replacement()`
