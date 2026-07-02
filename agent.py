@@ -801,7 +801,7 @@ def _handle_refinement(ctx: ConversationContext, latest_message: str, all_messag
         # If still empty, reconstruct from prior messages
         if not ctx.current_shortlist:
             prev_messages = [m for m in all_messages[:-1]]
-            prev_ctx = extract_context(prev_messages)
+            prev_ctx = extract_context(all_messages)  # use full history to preserve all context
         type_map = {
             "personality": "P", "behavior": "P", "behaviour": "P",
             "cognitive": "A", "aptitude": "A", "reasoning": "A", "ability": "A",
@@ -939,16 +939,14 @@ def _handle_refinement(ctx: ConversationContext, latest_message: str, all_messag
     # The DROP intent was satisfied - do NOT re-retrieve as that defeats the drop
     # If nothing is left after drops, return empty shortlist
     if not updated_shortlist:
-        prev_messages = [m for m in all_messages[:-1]]
-        prev_ctx = extract_context(prev_messages)
-        # Restore level and tech_keywords from prior context (don't lose them from DROP-only message)
-        if not ctx.level and prev_ctx.level:
-            ctx.level = prev_ctx.level
-        if not ctx.tech_keywords and prev_ctx.tech_keywords:
-            ctx.tech_keywords = list(prev_ctx.tech_keywords)
-        if prev_ctx.domain:
-            ctx.domain = prev_ctx.domain
-        # Re-run retrieval with preserved context, no exclusions (shortlist is empty anyway)
+        # Reconstruct full context from all messages (including DROP message) so
+        # level, test_types, tech_keywords, domain are all preserved for retrieval
+        prev_ctx = extract_context(all_messages)
+        ctx.level = prev_ctx.level or ctx.level
+        ctx.test_types = list(prev_ctx.test_types) if prev_ctx.test_types else ctx.test_types
+        ctx.tech_keywords = list(prev_ctx.tech_keywords) if prev_ctx.tech_keywords else ctx.tech_keywords
+        ctx.domain = prev_ctx.domain or ctx.domain
+        # Re-run retrieval with preserved context, no exclusions (shortlist is empty)
         new_results = retrieve_assessments(ctx, top_k=10)
         updated_shortlist = [item_to_recommendation(item) for item in new_results]
         ctx.current_shortlist = list(updated_shortlist)
