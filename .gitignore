@@ -1,0 +1,33 @@
+# Environment
+.env
+
+# Generated / large binary data
+catalog_processed.json
+catalog_index.faiss
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Pytest
+.pytest_cache/
+
+# Logs
+*.log
+api.log
+api_server.log
+
+# OS
+nul
+.DS_Store
+Thumbs.db
+
+# Virtual envs
+venv/
+.venv/
+env/
+.env.local

@@ -1,0 +1,18 @@
+# Render Blueprint — SHL Assessment Recommender
+# Deploy: render.yaml must be in the repo root
+# Connect repo at: https://render.com/blueprints
+
+services:
+  - type: web
+    name: shl-assessments
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false  # set in Render dashboard → Environment tab
+      - key: PYTHON_VERSION
+        value: "3.12"
